@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -240,13 +241,48 @@ func (ut *Client) RemoveData(hash []string) error {
 	return ut.doHashAction("removedata", hash)
 }
 
+func (ut *Client) handleActionResponse(resp *http.Response) (*ActionResult, error) {
+	if resp.StatusCode != http.StatusOK {
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return nil, errors.New("bad username or password")
+		case http.StatusBadRequest:
+			return nil, errors.New("utorrent api returned status code : 400")
+		}
+	}
+	respData, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	result := &ActionResult{}
+	err = json.Unmarshal(respData, &result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 //AddURL ..
-func (ut *Client) AddURL(url string) error {
-	return nil
+func (ut *Client) AddURL(torrenturl string) (*ActionResult, error) {
+	qs := url.Values{
+		"action":       {"add-url"},
+		"path":         {""},
+		"download_dir": {"0"},
+	}
+	req, err := ut.newRequest(qs, nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := ut.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	return ut.handleActionResponse(res)
 }
 
 //AddFile ..
-func (ut *Client) AddFile(torrentFile *os.File) ([]byte, error) {
+func (ut *Client) AddFile(torrentFile *os.File) (*ActionResult, error) {
 	qs := url.Values{
 		"action":       {"add-file"},
 		"path":         {""},
@@ -261,17 +297,5 @@ func (ut *Client) AddFile(torrentFile *os.File) ([]byte, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		switch res.StatusCode {
-		case http.StatusUnauthorized:
-			return nil, errors.New("bad username or password")
-		case http.StatusBadRequest:
-			return nil, errors.New("uTorrent API returned status code : 400")
-		}
-	}
-	respData, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-	return respData, nil
+	return ut.handleActionResponse(res)
 }
