@@ -19,8 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"booboo-bear.com/utils/nums"
-
 	"github.com/PuerkitoBio/goquery"
 )
 
@@ -186,7 +184,7 @@ func (ut *Client) doHashAction(action string, hash []string) error {
 		length := 0
 		rem := hLength - offset
 		for rem > 0 {
-			length = nums.MinInt(rem, 25)
+			length = min(rem, 25)
 			if _, err := ut.action(map[string][]string{
 				"action": {action},
 				"hash":   hash[offset : offset+length],
@@ -257,7 +255,7 @@ func (ut *Client) doSetProps(key, value string, hash []string) error {
 		length := 0
 		rem := hLength - offset
 		for rem > 0 {
-			length = nums.MinInt(rem, 25)
+			length = min(rem, 25)
 			if _, err := ut.action(map[string][]string{
 				"action": {"setprops"},
 				"s":      {key},
@@ -336,4 +334,11 @@ func (ut *Client) AddFile(torrentFile *os.File) (*ActionResult, error) {
 	}
 	defer res.Body.Close()
 	return ut.handleActionResponse(res)
+}
+
+func min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
 }
