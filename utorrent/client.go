@@ -35,7 +35,7 @@ type Client struct {
 }
 
 //NewClient ...
-func NewClient(baseURL string, username string, password string) (ut *Client) {
+func NewClient(baseURL string, username string, password string) (ut *Client, err error) {
 	if strings.HasSuffix(baseURL, "/") == false {
 		baseURL += "/"
 	}
@@ -48,7 +48,7 @@ func NewClient(baseURL string, username string, password string) (ut *Client) {
 		client:    new(http.Client),
 	}
 	ut.client.Jar, _ = cookiejar.New(nil)
-	ut.login()
+	err = ut.login()
 	return
 }
 
@@ -162,7 +162,7 @@ func (ut *Client) action(params url.Values) ([]byte, error) {
 	return ioutil.ReadAll(res.Body)
 }
 
-//ListFiles ...
+// ListFiles ...
 func (ut *Client) ListFiles() (*ListFileResponse, error) {
 	data, err := ut.action(map[string][]string{
 		"list":   {"1"},
@@ -174,12 +174,12 @@ func (ut *Client) ListFiles() (*ListFileResponse, error) {
 	return unmarshalListFileResponse(data)
 }
 
-//ActionResult ...
+// ActionResult ...
 type ActionResult struct {
 	Build int64 `json:"build"`
 }
 
-//Separator chuck of 25 element
+// Separator chuck of 25 element
 func (ut *Client) doHashAction(action string, hash []string) error {
 	if hLength := len(hash); hLength > 0 {
 		offset := 0
@@ -201,44 +201,82 @@ func (ut *Client) doHashAction(action string, hash []string) error {
 	return nil
 }
 
-//Start ...
+// Start ...
 func (ut *Client) Start(hash []string) error {
 	return ut.doHashAction("start", hash)
 }
 
-//Stop ...
+// Stop ...
 func (ut *Client) Stop(hash []string) error {
 	return ut.doHashAction("stop", hash)
 }
 
-//Pause ...
+// Pause ...
 func (ut *Client) Pause(hash []string) error {
 	return ut.doHashAction("pause", hash)
 }
 
-//ForceStart ...
+// ForceStart ...
 func (ut *Client) ForceStart(hash []string) error {
 	return ut.doHashAction("forcestart", hash)
 }
 
-//Unpause ...
+// Unpause ...
 func (ut *Client) Unpause(hash []string) error {
 	return ut.doHashAction("unpause", hash)
 }
 
-//Recheck ...
+// Recheck ...
 func (ut *Client) Recheck(hash []string) error {
 	return ut.doHashAction("recheck", hash)
 }
 
-//Remove ...
+// Remove ...
 func (ut *Client) Remove(hash []string) error {
 	return ut.doHashAction("remove", hash)
 }
 
-//RemoveData ...
+// RemoveData ...
 func (ut *Client) RemoveData(hash []string) error {
 	return ut.doHashAction("removedata", hash)
+}
+
+// SetPriorityTop set priority to highest.
+func (ut *Client) SetPriorityTop(hash []string) error {
+	return ut.doHashAction("queuetop", hash)
+}
+
+// SetPriorityBottom set priority to lowest.
+func (ut *Client) SetPriorityBottom(hash []string) error {
+	return ut.doHashAction("queuebottom", hash)
+}
+
+func (ut *Client) doSetProps(key, value string, hash []string) error {
+	if hLength := len(hash); hLength > 0 {
+		offset := 0
+		length := 0
+		rem := hLength - offset
+		for rem > 0 {
+			length = nums.MinInt(rem, 25)
+			if _, err := ut.action(map[string][]string{
+				"action": {"setprops"},
+				"s":      {key},
+				"v":      {value},
+				"hash":   hash[offset : offset+length],
+			}); err != nil {
+				return err
+			}
+			offset += length
+			rem = hLength - offset
+			log.Println("OK")
+		}
+	}
+	return nil
+}
+
+//SetLabel .
+func (ut *Client) SetLabel(hash, label string) error {
+	return ut.doSetProps("label", label, []string{hash})
 }
 
 func (ut *Client) handleActionResponse(resp *http.Response) (*ActionResult, error) {
