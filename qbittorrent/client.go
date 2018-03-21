@@ -4,17 +4,20 @@ package qbittorrent
 //https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-Documentation
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
-	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
-	"time"
 )
 
 //Client ... qBittorrent Configure
@@ -30,11 +33,6 @@ type Client struct {
 }
 
 type httpMethod string
-
-const (
-	methodGet  httpMethod = "GET"
-	methodPost httpMethod = "POST"
-)
 
 //NewClient ...
 func NewClient(baseURL string, username string, password string) (qb *Client, err error) {
@@ -59,33 +57,26 @@ func NewClient(baseURL string, username string, password string) (qb *Client, er
 	return
 }
 
-func (qb *Client) do(method httpMethod, path string, query url.Values, form url.Values) (data []byte, err error) {
-	tStart := time.Now()
-
-	defer log.Println(times.TimeTracks(tStart, "HttpRequest"))
-
-	_url, _ := url.Parse(qb.BaseURL + path)
+func (qb *Client) do(method httpMethod, path string, query url.Values, form url.Values) (body io.ReadCloser, err error) {
+	urlBuf := new(bytes.Buffer)
+	urlBuf.WriteString(qb.BaseURL)
+	urlBuf.WriteString(path)
 	if query != nil {
-		_url.RawQuery = maps.Join(query, "&")
+		urlBuf.WriteByte('?')
+		urlBuf.WriteString(query.Encode())
 	}
-	_urlStr := _url.String()
-	_req, _ := http.NewRequest(string(method), _urlStr, strings.NewReader(form.Encode()))
-	if method == methodPost {
-		_req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req, _ := http.NewRequest(string(method), urlBuf.String(), strings.NewReader(form.Encode()))
+	if method == http.MethodPost {
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	}
-	log.Printf("Connecting to %s ...", _urlStr)
-	_res, _err := qb.client.Do(_req)
+	res, _err := qb.client.Do(req)
 	if _err != nil {
 		return nil, _err
 	}
-
-	defer _res.Body.Close()
-
-	log.Println(times.TimeTracks(tStart, "Connected"))
-	if _res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s : %s", _urlStr, _res.Status)
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s : %s", urlBuf.String(), res.Status)
 	}
-	return ioutil.ReadAll(_res.Body)
+	return res.Body, nil
 }
 
 func (qb *Client) login() error {
@@ -95,7 +86,7 @@ func (qb *Client) login() error {
 	form := url.Values{}
 	form.Add("username", qb.Username)
 	form.Add("password", qb.Password)
-	_, err := qb.do(methodPost, "/login", nil, form)
+	_, err := qb.do(http.MethodPost, "/login", nil, form)
 	if err != nil {
 		return err
 	}
@@ -108,26 +99,36 @@ func (qb *Client) Logout() error {
 	if !qb.connected {
 		return errors.New("Not Connected")
 	}
-	_, err := qb.do(methodGet, "/logout", nil, nil)
+	_, err := qb.do(http.MethodGet, "/logout", nil, nil)
 	return err
+}
+
+func readAllString(body io.ReadCloser) (string, error) {
+	data, err := ioutil.ReadAll(body)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 //APIVersion ...
 func (qb *Client) APIVersion() (string, error) {
-	data, err := qb.do(methodGet, "/version/api", nil, nil)
+	body, err := qb.do(http.MethodGet, "/version/api", nil, nil)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	defer body.Close()
+	return readAllString(body)
 }
 
 //APIMinimumVersion ...
 func (qb *Client) APIMinimumVersion() (string, error) {
-	data, err := qb.do(methodGet, "/version/api_min", nil, nil)
+	body, err := qb.do(http.MethodGet, "/version/api_min", nil, nil)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	defer body.Close()
+	return readAllString(body)
 }
 
 //ListTorrent ...
@@ -135,17 +136,21 @@ func (qb *Client) ListTorrent() (torrents *[]Torrent, err error) {
 	if !qb.connected {
 		return nil, errors.New("Not Connected")
 	}
-	data, err := qb.do(methodGet, "/query/torrents", nil, nil)
+	body, err := qb.do(http.MethodGet, "/query/torrents", nil, nil)
 	if err != nil {
 		return
 	}
-	err = json.Unmarshal(data, &torrents)
-	return
+	jd := json.NewDecoder(body)
+	err = jd.Decode(&torrents)
+	if err != nil {
+		return nil, err
+	}
+	return torrents, nil
 }
 
 //Common command executor
 func (qb *Client) doCommand(cmd string, params url.Values) error {
-	qb.do(methodPost, "/command/"+cmd, nil, params)
+	qb.do(http.MethodPost, "/command/"+cmd, nil, params)
 	return nil
 }
 
@@ -193,15 +198,54 @@ func (qb *Client) RemoveData(hash []string) error {
 	})
 }
 
-//Recheck ...
-//https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-Documentation#recheck-torrent
+// Recheck ...
+// https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-Documentation#recheck-torrent
 func (qb *Client) Recheck(hash []string) error {
 	return qb.doCommand("pause", map[string][]string{
 		"hash": hash,
 	})
 }
 
-//Command ...
+// Command ...
 func (qb *Client) Command(action string, hash []string) error {
 	return nil
+}
+
+// UploadFile .
+// https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-Documentation#upload-torrent-from-disk
+func (qb *Client) UploadFile(file *os.File) error {
+	mpFile, _ := ioutil.TempFile(os.TempDir(), "qbtmp")
+	defer os.Remove(mpFile.Name())
+
+	wr := multipart.NewWriter(mpFile)
+	part, err := wr.CreateFormFile("torrents", filepath.Base(file.Name()))
+	if err != nil {
+		return err
+	}
+	io.Copy(part, file)
+
+	ulURL := createURL("/command/upload", nil)
+
+	req, err := http.NewRequest(http.MethodPost, ulURL, mpFile)
+	if err != nil {
+		return err
+	}
+	res, err := qb.client.Do(req)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to upload torrent: %v", err)
+	}
+	return nil
+}
+
+func createURL(path string, query url.Values) string {
+	buf := new(bytes.Buffer)
+	buf.WriteString(path)
+	if query != nil {
+		buf.WriteByte('?')
+		buf.WriteString(query.Encode())
+	}
+	return buf.String()
 }
